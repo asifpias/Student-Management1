@@ -2,175 +2,156 @@ import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
-from datetime import datetime
 
-# --- CONFIGURATION & GOOGLE API SETUP ---
-# REMINDER: Add your credentials.json file to the project folder
-# and ensure you share your Google Sheets with the 'client_email' in that JSON.
+# --- GOOGLE SHEETS LINKS ---
+IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
+APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
 
+# --- API SETUP ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
              "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
-    # REMINDER: Replace 'credentials.json' with your actual API key filename
+    
+    # Try to get credentials from Streamlit Secrets (Recommended for Cloud)
+    # If running locally, it will look for 'credentials.json' in the folder
     try:
-        creds = ServiceAccountCredentials.from_json_keyfile_name("dc8c1fade39e4047c349adb0fabbe89e8ba5a2d2", scope)
+        if "gcp_service_account" in st.secrets:
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+        else:
+            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
         return gspread.authorize(creds)
-    except:
+    except Exception as e:
+        st.error(f"Authentication Error: {e}")
         return None
 
 client = get_gspread_client()
 
-# --- HELPER FUNCTIONS ---
+# --- DATABASE HELPERS ---
 
-def get_sheet_by_type(batch_type):
-    """Returns the correct Google Spreadsheet based on Type."""
+def get_spreadsheet(batch_type):
     if not client: return None
-    sheet_name = "IELTS Batches" if batch_type == "IELTS" else "Aptis Batches"
-    try:
-        return client.open(sheet_name)
-    except:
-        st.error(f"Spreadsheet '{sheet_name}' not found. Please create it and share with API email.")
-        return None
+    link = IELTS_SHEET_LINK if batch_type == "IELTS" else APTIS_SHEET_LINK
+    return client.open_by_url(link)
 
-def get_all_batches():
-    """Fetches names of all worksheets from both main sheets."""
+def get_all_batch_names():
     batches = []
     for t in ["IELTS", "Aptis"]:
-        ss = get_sheet_by_type(t)
+        ss = get_spreadsheet(t)
         if ss:
             batches.extend([ws.title for ws in ss.worksheets()])
     return batches
 
-# --- NAVIGATION LOGIC ---
-
+# --- NAVIGATION ---
 if 'page' not in st.session_state:
     st.session_state.page = 'Home'
 
-def go_to(page_name):
-    st.session_state.page = page_name
+def nav(target):
+    st.session_state.page = target
+    st.rerun()
 
-# --- INTERFACE: HOME ---
+# --- INTERFACES ---
 
+# Global Header for all pages
+if st.session_state.page != 'Home':
+    c1, c2 = st.columns([1, 8])
+    with c1:
+        if st.button("🏠 Home"): nav('Home')
+    with c2:
+        if st.button("⬅️ Back"): nav('Home')
+    st.markdown("---")
+
+# PAGE: HOME
 if st.session_state.page == 'Home':
     st.title("🎓 Student Management App")
-    st.subheader("Welcome, please select an option:")
+    st.subheader("Main Menu")
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        if st.button("📁 Create Batch", use_container_width=True): go_to('Create Batch')
+        if st.button("📁 Create Batch", use_container_width=True): nav('Create Batch')
     with col2:
-        if st.button("➕ Add Student Info", use_container_width=True): go_to('Add Student')
+        if st.button("➕ Add Student Information", use_container_width=True): nav('Add Student')
     with col3:
-        if st.button("🔍 Find Student", use_container_width=True): go_to('Find Student')
-    
-    st.markdown("---")
-    st.caption("Made by Asif Iqbal Pias")
+        if st.button("🔍 Find Student", use_container_width=True): nav('Find Student')
 
-# --- INTERFACE: CREATE BATCH ---
-
+# PAGE: CREATE BATCH
 elif st.session_state.page == 'Create Batch':
     st.title("📁 Create New Batch")
-    
-    if st.button("🏠 Home"): go_to('Home')
-    
-    with st.form("batch_form"):
-        batch_name = st.text_input("Batch Name")
-        batch_type = st.selectbox("Type", ["IELTS", "Aptis"])
+    with st.form("batch_form", clear_on_submit=True):
+        b_name = st.text_input("Batch Name")
+        b_type = st.selectbox("Type", ["IELTS", "Aptis"])
         year = st.selectbox("Year", range(2024, 2031))
         time = st.selectbox("Time", ["4pm", "6pm"])
         
         c1, c2 = st.columns(2)
         with c1:
-            submitted = st.form_submit_button("Create Now")
+            if st.form_submit_button("Create Now"):
+                ss = get_spreadsheet(b_type)
+                if ss:
+                    new_ws = ss.add_worksheet(title=b_name, rows="100", cols="10")
+                    new_ws.append_row(["Student Name", "Student ID", "Contact", "Email", "Batch", "Time"])
+                    st.success(f"✅ Success! Batch '{b_name}' created in {b_type} Sheets.")
         with c2:
-            reset = st.form_submit_button("Reset")
+            if st.form_submit_button("Reset"):
+                st.rerun()
 
-    if submitted:
-        ss = get_sheet_by_type(batch_type)
-        if ss:
-            try:
-                # Create new worksheet
-                new_ws = ss.add_worksheet(title=batch_name, rows="100", cols="10")
-                # Set Headers
-                headers = ["Student Name", "Student ID", "Contact", "Email", "Batch", "Time"]
-                new_ws.append_row(headers)
-                st.success(f"Batch '{batch_name}' created successfully in {batch_type} Batches!")
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-# --- INTERFACE: ADD STUDENT ---
-
+# PAGE: ADD STUDENT
 elif st.session_state.page == 'Add Student':
     st.title("➕ Add Student Information")
+    all_batches = get_all_batch_names()
     
-    cols = st.columns(2)
-    with cols[0]:
-        if st.button("🏠 Home"): go_to('Home')
-    with cols[1]:
-        if st.button("⬅️ Back"): go_to('Home')
-
-    all_existing_batches = get_all_batches()
-    
-    with st.form("student_form"):
+    with st.form("std_form", clear_on_submit=True):
         name = st.text_input("Name of Student")
-        std_id = st.text_input("Student ID")
-        contact = st.text_input("Contact")
-        email = st.text_input("Email")
-        batch = st.selectbox("Batch", all_existing_batches)
-        time = st.selectbox("Time", ["4pm", "6pm"])
+        sid = st.text_input("Student ID")
+        cont = st.text_input("Contact")
+        mail = st.text_input("Email")
+        bat = st.selectbox("Batch", all_batches)
+        tm = st.selectbox("Time", ["4pm", "6pm"])
         
-        if st.form_submit_button("Save Student"):
-            # Logic to find which Spreadsheet contains this batch
+        if st.form_submit_button("Submit Information"):
             found = False
             for t in ["IELTS", "Aptis"]:
-                ss = get_sheet_by_type(t)
+                ss = get_spreadsheet(t)
                 try:
-                    ws = ss.worksheet(batch)
-                    ws.append_row([name, std_id, contact, email, batch, time])
-                    st.success("Student added successfully!")
-                    found = True
-                    break
+                    ws = ss.worksheet(bat)
+                    ws.append_row([name, sid, cont, mail, bat, tm])
+                    st.success(f"✅ Success! {name} has been added to {bat}.")
+                    found = True; break
                 except: continue
-            if not found: st.error("Could not find batch worksheet.")
+            if not found: st.error("Batch worksheet not found.")
 
-# --- INTERFACE: FIND STUDENT ---
-
+# PAGE: FIND STUDENT
 elif st.session_state.page == 'Find Student':
     st.title("🔍 Find Student")
     
-    if st.button("🏠 Home"): go_to('Home')
+    search = st.text_input("Search by Name or Student ID")
+    b_filter = st.selectbox("Filter by Batch", ["All"] + get_all_batch_names())
     
-    # Search and Filter
-    search_q = st.text_input("Search by Name or Student ID")
-    batch_filter = st.selectbox("Sort by Batch", ["All"] + get_all_batches())
-    
-    # Data Retrieval
-    all_data = []
+    # Data aggregation
+    all_recs = []
     for t in ["IELTS", "Aptis"]:
-        ss = get_sheet_by_type(t)
+        ss = get_spreadsheet(t)
         if ss:
             for ws in ss.worksheets():
-                if batch_filter == "All" or ws.title == batch_filter:
-                    data = ws.get_all_records()
-                    all_data.extend(data)
+                if b_filter == "All" or ws.title == b_filter:
+                    df_temp = pd.DataFrame(ws.get_all_records())
+                    all_recs.append(df_temp)
     
-    df = pd.DataFrame(all_data)
-    
-    if not df.empty:
-        # Search Filtering
-        if search_q:
-            df = df[df['Student Name'].str.contains(search_q, case=False) | 
-                    df['Student ID'].astype(str).str.contains(search_q)]
+    if all_recs:
+        main_df = pd.concat(all_recs, ignore_index=True)
+        if search:
+            main_df = main_df[main_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
         
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(main_df, use_container_width=True)
+        
+        st.markdown("---")
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1:
+            if st.button("➕ Add Student"): nav('Add Student')
+        with bc2:
+            st.button("📝 Edit Selected")
+        with bc3:
+            st.button("🗑️ Delete Selected")
     else:
-        st.info("No records found.")
+        st.warning("No data found in the sheets.")
 
-    st.markdown("---")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if st.button("➕ Add Student"): go_to('Add Student')
-    with c2:
-        st.button("📝 Edit (Cloud Only)")
-    with c3:
-        st.button("🗑️ Delete (Cloud Only)")
+st.sidebar.caption("Connected to Google Sheets API")
