@@ -7,32 +7,7 @@ import pandas as pd
 IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
 APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
 
-def get_gspread_client():
-    scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
-             "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
-    
-    try:
-        # Check if running on Streamlit Cloud (using Secrets)
-        if "gcp_service_account" in st.secrets:
-            # We convert the secrets into a dictionary that the library understands
-            creds_dict = dict(st.secrets["gcp_service_account"])
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            return gspread.authorize(creds)
-        
-        # Check if running locally (using a physical file)
-        elif os.path.exists("credentials.json"):
-            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-            return gspread.authorize(creds)
-            
-        else:
-            st.error("Authentication Error: No credentials found in Secrets or local folder.")
-            return None
-            
-    except Exception as e:
-        st.error(f"Authentication Error: {e}")
-        return None
 
-client = get_gspread_client()
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", 
              'https://www.googleapis.com/auth/spreadsheets',
