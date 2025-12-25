@@ -31,6 +31,8 @@ if 'gc' not in st.session_state:
     st.session_state.gc = None
 if 'last_update' not in st.session_state:
     st.session_state.last_update = None
+if 'connection_status' not in st.session_state:
+    st.session_state.connection_status = "disconnected"
 
 # ============================
 # AUTHENTICATION MODULE
@@ -53,33 +55,7 @@ def initialize_google_sheets():
         
         # Check for credentials in secrets
         if 'gcp_service_account' not in st.secrets:
-            st.error("""
-            ## 🔑 Missing Google Cloud Credentials
-            
-            **To fix this:**
-            1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-            2. Create a new project or select existing one
-            3. Enable **Google Sheets API** and **Google Drive API**
-            4. Create a Service Account
-            5. Generate a JSON key file
-            6. Add the content to Streamlit Cloud Secrets:
-            
-            ```toml
-            [gcp_service_account]
-            type = "service_account"
-            project_id = "your-project-id"
-            private_key_id = "your-private-key-id"
-            private_key = "-----BEGIN PRIVATE KEY-----\\nyour-actual-private-key\\n-----END PRIVATE KEY-----\\n"
-            client_email = "your-service-account@project.iam.gserviceaccount.com"
-            client_id = "your-client-id"
-            auth_uri = "https://accounts.google.com/o/oauth2/auth"
-            token_uri = "https://oauth2.googleapis.com/token"
-            auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-            client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/your-service-account"
-            ```
-            
-            **IMPORTANT:** Replace `\\n` with actual newlines in the private_key
-            """)
+            st.session_state.connection_status = "no_credentials"
             return None
         
         # Load credentials from secrets
@@ -104,29 +80,24 @@ def initialize_google_sheets():
         # Authorize gspread client
         gc = gspread.authorize(credentials)
         
-        # Test connection
+        # Test connection with a simple API call (FIXED: removed max_results)
         try:
-            # Simple API call to verify connection
-            gc.list_spreadsheet_files(max_results=1)
+            # Try to list spreadsheet files (simple test)
+            gc.list_spreadsheet_files()
             
             # Store in session state
             st.session_state.gc = gc
             st.session_state.last_update = datetime.now()
+            st.session_state.connection_status = "connected"
             
             return gc
             
         except Exception as test_error:
-            st.error(f"Connection test failed: {str(test_error)}")
+            st.session_state.connection_status = "test_failed"
             return None
             
     except Exception as e:
-        st.error(f"Authentication Error: {str(e)}")
-        st.info("""
-        **Common Issues & Solutions:**
-        1. **Invalid JWT Signature**: Ensure private_key has actual newlines, not \\n strings
-        2. **Permission Denied**: Share your Google Sheets with the service account email
-        3. **API Not Enabled**: Enable Google Sheets API & Drive API in Google Cloud Console
-        """)
+        st.session_state.connection_status = "error"
         return None
 
 # Initialize Google Sheets connection
@@ -138,7 +109,7 @@ gc = initialize_google_sheets()
 def get_spreadsheet(batch_type):
     """Get spreadsheet by type with comprehensive error handling"""
     if gc is None:
-        st.error("❌ Not connected to Google Sheets. Please check authentication.")
+        st.session_state.connection_status = "disconnected"
         return None
     
     try:
@@ -157,31 +128,22 @@ def get_spreadsheet(batch_type):
         error_msg = str(api_error)
         
         if "PERMISSION_DENIED" in error_msg:
-            service_account_email = st.secrets["gcp_service_account"]["client_email"]
-            st.error(f"""
-            ## 🔐 Permission Denied
-            
-            **To fix this:**
-            1. Open your Google Sheet: [{batch_type} Sheet]({link})
-            2. Click the **"Share"** button (top-right corner)
-            3. Add this email as an **Editor**: 
-               ```
-               {service_account_email}
-               ```
-            4. Click **"Send"**
-            
-            **Important**: The service account needs edit access to your spreadsheet.
-            """)
+            if 'gcp_service_account' in st.secrets:
+                service_account_email = st.secrets["gcp_service_account"]["client_email"]
+                st.error(f"""
+                ## 🔐 Permission Denied
+                
+                **To fix this:**
+                1. Open your Google Sheet: [{batch_type} Sheet]({link})
+                2. Click the **"Share"** button (top-right corner)
+                3. Add this email as an **Editor**: 
+                   ```
+                   {service_account_email}
+                   ```
+                4. Click **"Send"**
+                """)
         elif "notFound" in error_msg:
-            st.error(f"""
-            ## 📄 Spreadsheet Not Found
-            
-            The spreadsheet link for {batch_type} might be incorrect or deleted.
-            
-            **Current link:** {link}
-            
-            Please verify the spreadsheet exists and is accessible.
-            """)
+            st.error(f"Spreadsheet link for {batch_type} might be incorrect or deleted.")
         else:
             st.error(f"Google Sheets API Error: {error_msg}")
         return None
@@ -206,7 +168,7 @@ def get_all_batch_names():
                         "worksheet": ws
                     })
             except Exception as e:
-                st.warning(f"Could not read worksheets from {batch_type}: {e}")
+                continue
     
     return all_batches
 
@@ -214,7 +176,14 @@ def get_student_count(worksheet):
     """Get number of students in a batch (excluding header)"""
     try:
         all_values = worksheet.get_all_values()
-        return max(0, len(all_values) - 1)  # Subtract header row
+        # Count non-empty rows after header
+        count = 0
+        for i, row in enumerate(all_values):
+            if i == 0:  # Skip header
+                continue
+            if any(cell.strip() for cell in row):  # Check if row has any non-empty cells
+                count += 1
+        return count
     except:
         return 0
 
@@ -228,23 +197,27 @@ def navigate_to(page_name):
 
 def show_navigation():
     """Display navigation buttons"""
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
-        if st.button("🏠 Home", use_container_width=True):
+        if st.button("🏠 Home", use_container_width=True, key="nav_home"):
             navigate_to('Home')
     
     with col2:
-        if st.button("📁 Create Batch", use_container_width=True):
+        if st.button("📁 Create Batch", use_container_width=True, key="nav_create"):
             navigate_to('Create Batch')
     
     with col3:
-        if st.button("➕ Add Student", use_container_width=True):
+        if st.button("➕ Add Student", use_container_width=True, key="nav_add"):
             navigate_to('Add Student')
     
     with col4:
-        if st.button("🔍 Find Student", use_container_width=True):
+        if st.button("🔍 Find Student", use_container_width=True, key="nav_find"):
             navigate_to('Find Student')
+    
+    with col5:
+        if st.button("📊 View Batches", use_container_width=True, key="nav_view"):
+            navigate_to('View Batches')
     
     st.markdown("---")
 
@@ -256,19 +229,40 @@ def show_sidebar():
     with st.sidebar:
         st.title("🎓 System Info")
         
-        # Connection status
-        if gc:
-            st.success("✅ Connected to Google Sheets")
-            service_email = st.secrets["gcp_service_account"]["client_email"]
-            st.caption(f"Service Account: `{service_email[:20]}...`")
+        # Connection status with color coding
+        status_colors = {
+            "connected": "🟢",
+            "disconnected": "🔴",
+            "no_credentials": "🟡",
+            "test_failed": "🟠",
+            "error": "🔴"
+        }
+        
+        status_text = {
+            "connected": "Connected to Google Sheets",
+            "disconnected": "Not Connected",
+            "no_credentials": "Missing Credentials",
+            "test_failed": "Connection Test Failed",
+            "error": "Connection Error"
+        }
+        
+        status = st.session_state.connection_status
+        status_icon = status_colors.get(status, "⚪")
+        status_message = status_text.get(status, "Unknown Status")
+        
+        if status == "connected":
+            st.success(f"{status_icon} {status_message}")
+            if 'gcp_service_account' in st.secrets:
+                service_email = st.secrets["gcp_service_account"]["client_email"]
+                st.caption(f"Service Account: `{service_email[:20]}...`")
         else:
-            st.error("❌ Not Connected")
+            st.error(f"{status_icon} {status_message}")
         
         st.markdown("---")
         
-        # Quick Stats
+        # Quick Stats (only if connected)
         st.subheader("📊 Quick Stats")
-        if gc:
+        if gc and status == "connected":
             try:
                 all_batches = get_all_batch_names()
                 total_batches = len(all_batches)
@@ -276,31 +270,50 @@ def show_sidebar():
                 
                 st.metric("Total Batches", total_batches)
                 st.metric("Total Students", total_students)
-            except:
-                st.info("No data available")
+                
+                # IELTS vs Aptis breakdown
+                ielts_batches = len([b for b in all_batches if b["type"] == "IELTS"])
+                aptis_batches = len([b for b in all_batches if b["type"] == "Aptis"])
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("IELTS", ielts_batches)
+                with col2:
+                    st.metric("Aptis", aptis_batches)
+                    
+            except Exception as e:
+                st.info("Stats not available")
+        else:
+            st.info("Connect to see stats")
         
         st.markdown("---")
         
         # Tools
         st.subheader("🛠️ Tools")
-        if st.button("🔄 Refresh Connection"):
+        
+        if st.button("🔄 Refresh Connection", use_container_width=True):
             st.session_state.gc = None
+            st.session_state.connection_status = "disconnected"
             st.rerun()
         
-        if st.button("📋 View All Batches"):
-            navigate_to('View Batches')
+        if st.button("📋 Debug Info", use_container_width=True):
+            navigate_to('Debug')
         
         st.markdown("---")
         
         # Help section
         with st.expander("❓ Need Help?"):
             st.markdown("""
-            **Common Issues:**
-            1. **Can't access sheet?** Share it with service account
-            2. **Private key error?** Ensure newlines are actual \\n characters
-            3. **Data not saving?** Check internet connection
+            **Quick Fixes:**
+            1. **Can't access sheet?** 
+               - Share it with service account email
+            2. **Private key error?**
+               - Ensure newlines are actual \\n characters
+            3. **Data not saving?**
+               - Check internet connection
+               - Verify sheet permissions
             
-            **Contact Support:** admin@example.com
+            **Support:** admin@example.com
             """)
 
 # ============================
@@ -311,30 +324,51 @@ def show_home_page():
     st.title("🎓 Student Management System")
     st.markdown("Welcome to the comprehensive student management platform")
     
-    # Connection status banner
-    if not gc:
-        st.warning("⚠️ System is not connected to Google Sheets. Some features may be limited.")
+    # Show connection status banner
+    if st.session_state.connection_status != "connected":
+        if st.session_state.connection_status == "no_credentials":
+            st.error("""
+            ## 🔑 Missing Credentials Setup
+            
+            Please add your Google Service Account credentials to Streamlit Secrets.
+            
+            **Steps:**
+            1. Go to Google Cloud Console
+            2. Create Service Account with Sheets & Drive API access
+            3. Download JSON key file
+            4. Add to `.streamlit/secrets.toml` file
+            """)
+        else:
+            st.warning("⚠️ System is not connected to Google Sheets. Some features may be limited.")
     
     # Feature cards
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("""
-        ### 📁 Create New Batch
-        - Create IELTS or Aptis batches
-        - Set batch time (4pm or 6pm)
-        - Automatic spreadsheet creation
-        """)
+        <div style='padding: 20px; border-radius: 10px; background-color: #f0f2f6;'>
+        <h3>📁 Create New Batch</h3>
+        <ul>
+        <li>Create IELTS or Aptis batches</li>
+        <li>Set batch time (4pm or 6pm)</li>
+        <li>Automatic spreadsheet creation</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
         if st.button("Create Batch →", key="home_create", use_container_width=True):
             navigate_to('Create Batch')
     
     with col2:
         st.markdown("""
-        ### 👥 Student Management
-        - Add new students to batches
-        - Update student information
-        - Search and filter students
-        """)
+        <div style='padding: 20px; border-radius: 10px; background-color: #f0f2f6;'>
+        <h3>👥 Student Management</h3>
+        <ul>
+        <li>Add new students to batches</li>
+        <li>Update student information</li>
+        <li>Search and filter students</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
         if st.button("Manage Students →", key="home_manage", use_container_width=True):
             navigate_to('Add Student')
     
@@ -342,49 +376,108 @@ def show_home_page():
     
     with col3:
         st.markdown("""
-        ### 🔍 Search & Analytics
-        - Search by name or ID
-        - Filter by batch
-        - Export data to CSV
-        """)
+        <div style='padding: 20px; border-radius: 10px; background-color: #f0f2f6;'>
+        <h3>🔍 Search & Analytics</h3>
+        <ul>
+        <li>Search by name or ID</li>
+        <li>Filter by batch</li>
+        <li>Export data to CSV</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
         if st.button("Search Students →", key="home_search", use_container_width=True):
             navigate_to('Find Student')
     
     with col4:
         st.markdown("""
-        ### 📊 View All Data
-        - View all batches
-        - Student counts per batch
-        - Batch statistics
-        """)
+        <div style='padding: 20px; border-radius: 10px; background-color: #f0f2f6;'>
+        <h3>📊 View All Data</h3>
+        <ul>
+        <li>View all batches</li>
+        <li>Student counts per batch</li>
+        <li>Batch statistics</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
         if st.button("View Batches →", key="home_view", use_container_width=True):
             navigate_to('View Batches')
     
-    # Recent activity (if any)
-    st.markdown("---")
-    st.subheader("📈 Quick Overview")
+    # Quick actions for disconnected state
+    if not gc:
+        st.markdown("---")
+        st.subheader("🚀 Quick Setup")
+        
+        with st.expander("Setup Instructions"):
+            st.markdown("""
+            ### To get started:
+            
+            1. **Create Google Cloud Project**
+               - Go to [Google Cloud Console](https://console.cloud.google.com/)
+               - Create new project or select existing
+            
+            2. **Enable APIs**
+               - Enable **Google Sheets API**
+               - Enable **Google Drive API**
+            
+            3. **Create Service Account**
+               - IAM & Admin → Service Accounts
+               - Create new service account
+               - Grant Editor role
+            
+            4. **Create Key**
+               - Click on service account
+               - Keys → Add Key → JSON
+               - Download JSON file
+            
+            5. **Share Google Sheets**
+               - Open your IELTS and Aptis sheets
+               - Click Share
+               - Add service account email as Editor
+            
+            6. **Add to Streamlit**
+               - In `.streamlit/secrets.toml`:
+               ```
+               [gcp_service_account]
+               type = "service_account"
+               project_id = "your-project-id"
+               private_key_id = "your-key-id"
+               private_key = "-----BEGIN PRIVATE KEY-----\\nyour-key\\n-----END PRIVATE KEY-----\\n"
+               client_email = "your-email@project.iam.gserviceaccount.com"
+               client_id = "your-client-id"
+               auth_uri = "https://accounts.google.com/o/oauth2/auth"
+               token_uri = "https://oauth2.googleapis.com/token"
+               auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+               client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/your-email"
+               ```
+            """)
     
-    if gc:
+    # Recent activity (if connected)
+    if gc and st.session_state.connection_status == "connected":
+        st.markdown("---")
+        st.subheader("📈 Recent Activity")
+        
         try:
             all_batches = get_all_batch_names()
             if all_batches:
                 # Show recent batches
-                recent_batches = all_batches[:5]  # Show first 5
+                recent_batches = all_batches[:3]  # Show first 3
                 
                 for batch in recent_batches:
                     student_count = get_student_count(batch["worksheet"])
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    with col1:
-                        st.text(f"📚 {batch['name']}")
-                    with col2:
-                        st.text(f"Type: {batch['type']}")
-                    with col3:
-                        st.text(f"Students: {student_count}")
-                    st.progress(min(student_count / 50, 1.0))  # Cap at 50 for visualization
+                    with st.container():
+                        col1, col2, col3 = st.columns([3, 2, 2])
+                        with col1:
+                            st.text(f"📚 {batch['name']}")
+                        with col2:
+                            st.text(f"Type: {batch['type']}")
+                        with col3:
+                            st.text(f"Students: {student_count}")
+                        st.progress(min(student_count / 50, 1.0))
+                        st.markdown("---")
             else:
                 st.info("No batches found. Create your first batch to get started!")
         except:
-            st.info("Unable to load batch information")
+            st.info("Unable to load recent activity")
 
 # ============================
 # PAGE: CREATE BATCH
@@ -395,27 +488,34 @@ def show_create_batch_page():
     show_navigation()
     
     if not gc:
-        st.error("Please connect to Google Sheets first.")
+        st.error("🔌 Please connect to Google Sheets first.")
+        st.info("Go to Home page for setup instructions")
         return
     
     with st.form("create_batch_form", clear_on_submit=True):
         col1, col2 = st.columns(2)
         
         with col1:
-            batch_name = st.text_input("Batch Name*", placeholder="e.g., IELTS_Batch_1_2024")
+            batch_name = st.text_input("Batch Name*", placeholder="e.g., IELTS_Batch_1_2024", 
+                                      help="Unique name for this batch")
             batch_type = st.selectbox("Batch Type*", ["IELTS", "Aptis"])
         
         with col2:
             year = st.selectbox("Year*", range(2024, 2031))
             batch_time = st.selectbox("Time Slot*", ["4:00 PM", "6:00 PM", "Other"])
         
-        # Optional description
         description = st.text_area("Batch Description (Optional)", 
-                                  placeholder="Enter any additional notes about this batch...")
+                                  placeholder="Enter any additional notes about this batch...",
+                                  height=100)
         
         st.markdown("**Required fields***")
         
-        submitted = st.form_submit_button("🚀 Create Batch", type="primary")
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col2:
+            submitted = st.form_submit_button("🚀 Create Batch", type="primary", use_container_width=True)
+        with col3:
+            if st.form_submit_button("🗑️ Clear Form", use_container_width=True):
+                st.rerun()
         
         if submitted:
             if not batch_name:
@@ -427,7 +527,7 @@ def show_create_batch_page():
             existing_names = [b["name"] for b in all_batches]
             
             if batch_name in existing_names:
-                st.error(f"Batch '{batch_name}' already exists. Please choose a different name.")
+                st.error(f"❌ Batch '{batch_name}' already exists. Please choose a different name.")
                 return
             
             # Create the batch
@@ -449,37 +549,37 @@ def show_create_batch_page():
                         ]
                         new_worksheet.append_row(headers)
                         
-                        # Add batch info as first row (optional)
-                        batch_info = [
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "",  # No student ID for batch header
-                            f"{batch_type} - {batch_name}",
-                            "", "",  # Contact and Email empty
-                            batch_name,
-                            batch_time,
-                            str(year),
-                            "ACTIVE",
-                            description if description else "No description"
-                        ]
-                        new_worksheet.append_row(batch_info)
+                        # Format header row (bold)
+                        new_worksheet.format('A1:J1', {
+                            'textFormat': {'bold': True},
+                            'backgroundColor': {'red': 0.2, 'green': 0.6, 'blue': 0.8, 'alpha': 0.3}
+                        })
                         
                         st.success(f"✅ Batch '{batch_name}' created successfully!")
                         st.balloons()
                         
-                        # Show next steps
-                        with st.expander("🎯 Next Steps"):
+                        # Show success details
+                        with st.expander("📋 Batch Details", expanded=True):
                             st.markdown(f"""
-                            1. **Add Students**: Go to 'Add Student' page
-                            2. **Share Access**: Batch is ready for data entry
-                            3. **Manage**: You can now add students to {batch_name}
+                            **Batch Information:**
+                            - **Name:** {batch_name}
+                            - **Type:** {batch_type}
+                            - **Year:** {year}
+                            - **Time:** {batch_time}
+                            - **Created:** {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+                            
+                            **Next Steps:**
+                            1. Go to **'Add Student'** page to add students
+                            2. Share the sheet link with team members
+                            3. Monitor progress from the **'View Batches'** page
                             """)
                         
-                        # Auto-clear form after delay
-                        time.sleep(2)
+                        # Auto-refresh after 3 seconds
+                        time.sleep(3)
                         st.rerun()
                         
                 except Exception as e:
-                    st.error(f"Failed to create batch: {str(e)}")
+                    st.error(f"❌ Failed to create batch: {str(e)}")
 
 # ============================
 # PAGE: ADD STUDENT
@@ -490,37 +590,40 @@ def show_add_student_page():
     show_navigation()
     
     if not gc:
-        st.error("Please connect to Google Sheets first.")
+        st.error("🔌 Please connect to Google Sheets first.")
         return
     
     # Get all available batches
     all_batches = get_all_batch_names()
     
     if not all_batches:
-        st.warning("No batches found. Please create a batch first.")
-        if st.button("Create New Batch"):
+        st.warning("📭 No batches found. Please create a batch first.")
+        if st.button("📁 Create New Batch"):
             navigate_to('Create Batch')
         return
     
     # Create two-column layout
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([2, 1])
     
     with col1:
         with st.form("student_form", clear_on_submit=True):
-            st.subheader("Student Details")
+            st.subheader("👤 Student Details")
             
-            student_name = st.text_input("Full Name*", placeholder="John Smith")
-            student_id = st.text_input("Student ID*", placeholder="STU2024001")
-            contact_number = st.text_input("Contact Number*", placeholder="+1234567890")
-            email = st.text_input("Email Address*", placeholder="john@example.com")
+            col1, col2 = st.columns(2)
+            with col1:
+                student_name = st.text_input("Full Name*", placeholder="John Smith")
+                student_id = st.text_input("Student ID*", placeholder="STU2024001")
+            with col2:
+                contact_number = st.text_input("Contact Number*", placeholder="+1234567890")
+                email = st.text_input("Email Address*", placeholder="john@example.com")
             
-            st.subheader("Batch Information")
+            st.subheader("📚 Batch Information")
             
-            # Group batches by type for better organization
+            # Group batches by type
             ielts_batches = [b for b in all_batches if b["type"] == "IELTS"]
             aptis_batches = [b for b in all_batches if b["type"] == "Aptis"]
             
-            batch_type = st.radio("Select Batch Type:", ["IELTS", "Aptis"])
+            batch_type = st.radio("Select Batch Type:", ["IELTS", "Aptis"], horizontal=True)
             
             if batch_type == "IELTS":
                 available_batches = ielts_batches
@@ -528,41 +631,46 @@ def show_add_student_page():
                 available_batches = aptis_batches
             
             if not available_batches:
-                st.warning(f"No {batch_type} batches available. Create one first.")
+                st.warning(f"📭 No {batch_type} batches available. Create one first.")
                 batch_name = None
             else:
                 batch_options = [f"{b['name']} ({b['type']})" for b in available_batches]
                 selected_batch = st.selectbox("Select Batch*", batch_options)
-                batch_name = selected_batch.split(" (")[0]  # Extract just the name
+                batch_name = selected_batch.split(" (")[0]
             
             additional_notes = st.text_area("Additional Notes", 
                                           placeholder="Any special requirements or notes...",
-                                          height=100)
+                                          height=80)
             
             st.markdown("**Required fields***")
             
-            submitted = st.form_submit_button("💾 Save Student Record", type="primary")
+            col1, col2 = st.columns(2)
+            with col1:
+                submitted = st.form_submit_button("💾 Save Student", type="primary", use_container_width=True)
+            with col2:
+                if st.form_submit_button("🗑️ Clear Form", use_container_width=True):
+                    st.rerun()
     
     with col2:
-        st.subheader("📋 Preview & Information")
+        st.subheader("👁️ Preview")
         st.info("""
         **Guidelines:**
-        - All fields marked with * are required
-        - Student ID must be unique
-        - Email should be valid for communication
+        - All * fields are required
+        - Student ID should be unique
+        - Email for communication
         - Double-check contact number
         """)
         
         # Live preview
-        if student_name:
+        if student_name or student_id:
             st.markdown("### 📄 Record Preview")
             preview_data = {
-                "Name": student_name,
-                "Student ID": student_id,
-                "Contact": contact_number,
-                "Email": email,
+                "Name": student_name if student_name else "Not entered",
+                "Student ID": student_id if student_id else "Not entered",
+                "Contact": contact_number if contact_number else "Not entered",
+                "Email": email if email else "Not entered",
                 "Batch": batch_name if batch_name else "Not selected",
-                "Type": batch_type
+                "Type": batch_type if batch_name else "Not selected"
             }
             
             for key, value in preview_data.items():
@@ -571,8 +679,15 @@ def show_add_student_page():
     # Handle form submission
     if submitted:
         # Validation
-        if not all([student_name, student_id, contact_number, email, batch_name]):
-            st.error("Please fill all required fields.")
+        missing_fields = []
+        if not student_name: missing_fields.append("Full Name")
+        if not student_id: missing_fields.append("Student ID")
+        if not contact_number: missing_fields.append("Contact Number")
+        if not email: missing_fields.append("Email Address")
+        if not batch_name: missing_fields.append("Batch")
+        
+        if missing_fields:
+            st.error(f"Please fill all required fields: {', '.join(missing_fields)}")
             return
         
         # Find the selected batch
@@ -607,24 +722,35 @@ def show_add_student_page():
             worksheet.append_row(student_data)
             
             # Success message
-            st.success(f"✅ Student '{student_name}' added to '{batch_name}' successfully!")
+            st.success(f"✅ Student '{student_name}' added to '{batch_name}'!")
             st.balloons()
             
             # Show summary
-            with st.expander("📋 View Added Record"):
-                summary_df = pd.DataFrame([{
-                    "Field": ["Timestamp", "ID", "Name", "Contact", "Email", "Batch", "Type", "Status"],
-                    "Value": [timestamp, student_id, student_name, contact_number, 
-                             email, batch_name, batch_type, "ACTIVE"]
-                }])
-                st.table(summary_df)
+            with st.expander("📋 Added Record Details", expanded=True):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown(f"""
+                    **Student Info:**
+                    - Name: {student_name}
+                    - ID: {student_id}
+                    - Contact: {contact_number}
+                    - Email: {email}
+                    """)
+                with col2:
+                    st.markdown(f"""
+                    **Batch Info:**
+                    - Batch: {batch_name}
+                    - Type: {batch_type}
+                    - Time Added: {timestamp}
+                    - Status: ACTIVE
+                    """)
             
             # Option to add another student
-            if st.button("➕ Add Another Student"):
+            if st.button("➕ Add Another Student", use_container_width=True):
                 st.rerun()
             
         except Exception as e:
-            st.error(f"Failed to add student: {str(e)}")
+            st.error(f"❌ Failed to add student: {str(e)}")
 
 # ============================
 # PAGE: FIND STUDENT
@@ -635,27 +761,33 @@ def show_find_student_page():
     show_navigation()
     
     if not gc:
-        st.error("Please connect to Google Sheets first.")
+        st.error("🔌 Please connect to Google Sheets first.")
         return
     
     # Search interface
-    col1, col2 = st.columns([2, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
-        search_query = st.text_input("Search by Name, ID, Email, or Contact", 
-                                    placeholder="Enter search term...")
+        search_query = st.text_input("🔎 Search by Name, ID, Email, or Contact", 
+                                    placeholder="Enter search term...",
+                                    help="Search across all student fields")
     
     with col2:
         search_type = st.selectbox("Search In", 
-                                 ["All Fields", "Name Only", "ID Only", "Email Only"])
+                                 ["All Fields", "Name Only", "ID Only", "Email Only", "Contact Only"])
+    
+    with col3:
+        if st.button("Search", type="primary", use_container_width=True):
+            st.session_state.search_triggered = True
     
     # Filter options
-    with st.expander("🔧 Advanced Filters"):
+    with st.expander("🔧 Advanced Filters", expanded=False):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            batch_filter = st.selectbox("Filter by Batch", 
-                                       ["All Batches"] + [b["name"] for b in get_all_batch_names()])
+            all_batches = get_all_batch_names()
+            batch_names = ["All Batches"] + [b["name"] for b in all_batches]
+            batch_filter = st.selectbox("Filter by Batch", batch_names)
         
         with col2:
             type_filter = st.selectbox("Filter by Type", 
@@ -665,21 +797,23 @@ def show_find_student_page():
             year_filter = st.selectbox("Filter by Year", 
                                       ["All Years"] + list(range(2020, 2031)))
     
-    # Search button
-    search_button = st.button("🔎 Search", type="primary")
-    
-    if search_button or search_query:
-        with st.spinner("Searching..."):
+    # Check if search was triggered
+    if hasattr(st.session_state, 'search_triggered') and st.session_state.search_triggered:
+        with st.spinner("Searching student records..."):
             try:
                 # Collect all student data
                 all_students = []
                 
-                for batch in get_all_batch_names():
+                for batch in all_batches:
                     try:
                         worksheet = batch["worksheet"]
                         data = worksheet.get_all_records()
                         
                         for row in data:
+                            # Skip empty rows and header-like rows
+                            if not row.get("Student ID") and not row.get("Full Name"):
+                                continue
+                            
                             # Add batch info to each row
                             row["Batch_Name"] = batch["name"]
                             row["Batch_Type"] = batch["type"]
@@ -688,7 +822,7 @@ def show_find_student_page():
                         continue
                 
                 if not all_students:
-                    st.info("No student records found.")
+                    st.info("📭 No student records found in the system.")
                     return
                 
                 # Convert to DataFrame
@@ -702,76 +836,96 @@ def show_find_student_page():
                     df = df[df["Batch_Type"] == type_filter]
                 
                 if year_filter != "All Years":
-                    # Assuming there's a Year column
                     if "Year" in df.columns:
-                        df = df[df["Year"] == str(year_filter)]
+                        df = df[df["Year"].astype(str) == str(year_filter)]
                 
                 # Apply search
                 if search_query:
+                    search_lower = search_query.lower()
+                    
                     if search_type == "Name Only":
-                        mask = df["Full Name"].astype(str).str.contains(search_query, case=False, na=False)
+                        mask = df["Full Name"].astype(str).str.lower().str.contains(search_lower)
                     elif search_type == "ID Only":
-                        mask = df["Student ID"].astype(str).str.contains(search_query, case=False, na=False)
+                        mask = df["Student ID"].astype(str).str.lower().str.contains(search_lower)
                     elif search_type == "Email Only":
-                        mask = df["Email Address"].astype(str).str.contains(search_query, case=False, na=False)
+                        mask = df["Email Address"].astype(str).str.lower().str.contains(search_lower)
+                    elif search_type == "Contact Only":
+                        mask = df["Contact Number"].astype(str).str.lower().str.contains(search_lower)
                     else:  # All Fields
                         mask = df.astype(str).apply(
-                            lambda x: x.str.contains(search_query, case=False, na=False)
+                            lambda x: x.str.lower().str.contains(search_lower)
                         ).any(axis=1)
                     
                     df = df[mask]
                 
                 # Display results
                 if len(df) > 0:
-                    st.success(f"Found {len(df)} student(s)")
+                    st.success(f"✅ Found {len(df)} student(s)")
                     
                     # Select columns to display
                     display_cols = ["Timestamp", "Student ID", "Full Name", "Contact Number", 
-                                   "Email Address", "Batch_Name", "Batch_Type", "Status"]
+                                   "Email Address", "Batch_Name", "Batch_Type", "Status", "Notes"]
                     
                     # Filter to available columns
                     available_cols = [col for col in display_cols if col in df.columns]
                     display_df = df[available_cols]
                     
-                    # Show data
+                    # Show data with pagination
                     st.dataframe(
                         display_df,
                         use_container_width=True,
-                        height=400
+                        height=400,
+                        hide_index=True
                     )
                     
                     # Export option
-                    col1, col2 = st.columns(2)
+                    col1, col2, col3 = st.columns([2, 1, 1])
                     with col1:
                         csv = display_df.to_csv(index=False)
                         st.download_button(
                             label="📥 Download as CSV",
                             data=csv,
                             file_name=f"students_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                            mime="text/csv"
+                            mime="text/csv",
+                            use_container_width=True
                         )
                     
                     with col2:
-                        if st.button("🔄 Clear Search"):
+                        if st.button("🔄 New Search", use_container_width=True):
+                            st.session_state.search_triggered = False
                             st.rerun()
                     
-                    # Show statistics
-                    with st.expander("📊 Search Statistics"):
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Total Records", len(df))
-                        with col2:
-                            unique_batches = df["Batch_Name"].nunique()
-                            st.metric("Unique Batches", unique_batches)
-                        with col3:
-                            active_count = len(df[df.get("Status", "") == "ACTIVE"])
-                            st.metric("Active Students", active_count)
+                    with col3:
+                        if st.button("📊 Show Stats", use_container_width=True):
+                            with st.expander("📈 Search Statistics"):
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Total Found", len(df))
+                                with col2:
+                                    unique_batches = df["Batch_Name"].nunique()
+                                    st.metric("Unique Batches", unique_batches)
+                                with col3:
+                                    active_count = len(df[df.get("Status", "") == "ACTIVE"])
+                                    st.metric("Active Students", active_count)
                 
                 else:
-                    st.warning("No students found matching your search criteria.")
+                    st.warning("🔍 No students found matching your search criteria.")
+                    if st.button("🔄 Clear Search", use_container_width=True):
+                        st.session_state.search_triggered = False
+                        st.rerun()
                     
             except Exception as e:
-                st.error(f"Search failed: {str(e)}")
+                st.error(f"❌ Search failed: {str(e)}")
+    
+    else:
+        # Initial state - show search tips
+        st.info("""
+        **Search Tips:**
+        - Enter any student detail to search
+        - Use advanced filters for precise results
+        - Search is case-insensitive
+        - Results can be exported as CSV
+        """)
 
 # ============================
 # PAGE: VIEW BATCHES
@@ -782,14 +936,16 @@ def show_view_batches_page():
     show_navigation()
     
     if not gc:
-        st.error("Please connect to Google Sheets first.")
+        st.error("🔌 Please connect to Google Sheets first.")
         return
     
     try:
         all_batches = get_all_batch_names()
         
         if not all_batches:
-            st.info("No batches found. Create your first batch!")
+            st.info("📭 No batches found. Create your first batch!")
+            if st.button("📁 Create New Batch", use_container_width=True):
+                navigate_to('Create Batch')
             return
         
         # Create DataFrame for display
@@ -803,9 +959,11 @@ def show_view_batches_page():
                 "Worksheet": batch["worksheet"]
             })
         
-        df = pd.DataFrame(batch_data)
+        df = pd.DataFrame(batch_data).sort_values("Student Count", ascending=False)
         
         # Display statistics
+        st.subheader("📈 Batch Statistics")
+        
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Batches", len(df))
@@ -817,75 +975,186 @@ def show_view_batches_page():
             st.metric("Total Students", df["Student Count"].sum())
         
         # Interactive table
-        st.subheader("📋 Batch Details")
+        st.subheader("📋 All Batches")
         
-        # Add search
-        search_term = st.text_input("Search batches...")
+        # Search and filter
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            search_term = st.text_input("Search batches by name...")
+        with col2:
+            type_filter = st.selectbox("Filter by type", ["All", "IELTS", "Aptis"])
+        
+        # Apply filters
+        filtered_df = df.copy()
         if search_term:
-            df = df[df.apply(lambda row: row.astype(str).str.contains(search_term, case=False).any(), axis=1)]
+            filtered_df = filtered_df[filtered_df["Batch Name"].str.contains(search_term, case=False, na=False)]
+        if type_filter != "All":
+            filtered_df = filtered_df[filtered_df["Type"] == type_filter]
         
-        # Display table with interactive features
-        edited_df = st.data_editor(
-            df[["Batch Name", "Type", "Student Count"]],
+        # Display table
+        st.dataframe(
+            filtered_df[["Batch Name", "Type", "Student Count"]],
             use_container_width=True,
             height=400,
             column_config={
-                "Student Count": st.column_config.ProgressColumn(
-                    "Student Count",
+                "Student Count": st.column_config.NumberColumn(
+                    "Students",
                     help="Number of students in batch",
-                    format="%d",
-                    min_value=0,
-                    max_value=df["Student Count"].max() if len(df) > 0 else 100
+                    format="%d"
                 )
             }
         )
         
+        # Batch details section
+        st.subheader("🔍 Batch Details")
+        
+        if len(filtered_df) > 0:
+            selected_batch = st.selectbox(
+                "Select a batch to view details:",
+                filtered_df["Batch Name"].tolist()
+            )
+            
+            if selected_batch:
+                selected_row = filtered_df[filtered_df["Batch Name"] == selected_batch].iloc[0]
+                worksheet = selected_row["Worksheet"]
+                
+                try:
+                    student_data = worksheet.get_all_records()
+                    if student_data:
+                        # Remove empty rows and header-like rows
+                        clean_data = []
+                        for row in student_data:
+                            if row.get("Student ID") or row.get("Full Name"):
+                                clean_data.append(row)
+                        
+                        if clean_data:
+                            students_df = pd.DataFrame(clean_data)
+                            
+                            # Show batch summary
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Students in Batch", len(students_df))
+                            with col2:
+                                active_students = len(students_df[students_df.get("Status", "") == "ACTIVE"])
+                                st.metric("Active Students", active_students)
+                            with col3:
+                                if "Year" in students_df.columns:
+                                    unique_years = students_df["Year"].nunique()
+                                    st.metric("Unique Years", unique_years)
+                            
+                            # Show student table
+                            st.write(f"**Students in {selected_batch}:**")
+                            display_cols = ["Student ID", "Full Name", "Contact Number", "Email Address", "Status"]
+                            available_cols = [col for col in display_cols if col in students_df.columns]
+                            
+                            st.dataframe(
+                                students_df[available_cols],
+                                use_container_width=True,
+                                height=300
+                            )
+                            
+                            # Export option
+                            csv = students_df.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Export Batch Data",
+                                data=csv,
+                                file_name=f"{selected_batch}_students.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+                        else:
+                            st.info("📭 No students in this batch yet.")
+                    else:
+                        st.info("📭 No student data available for this batch.")
+                except Exception as e:
+                    st.warning(f"Could not load student data: {str(e)}")
+        
         # Batch actions
         st.subheader("⚡ Quick Actions")
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("🔄 Refresh Data"):
+            if st.button("🔄 Refresh Data", use_container_width=True):
                 st.rerun()
         
         with col2:
-            if st.button("📥 Export Batch List"):
+            if st.button("📥 Export All Batches", use_container_width=True):
                 csv = df.to_csv(index=False)
                 st.download_button(
                     label="Download CSV",
                     data=csv,
-                    file_name="batches.csv",
-                    mime="text/csv"
+                    file_name="all_batches.csv",
+                    mime="text/csv",
+                    key="export_all"
                 )
         
-        with col3:
-            if st.button("📊 View Statistics"):
-                with st.expander("Detailed Statistics"):
-                    st.write(df.describe())
-        
-        # Show individual batch details
-        st.subheader("🔍 Batch Details")
-        selected_batch = st.selectbox("Select a batch to view details:", df["Batch Name"].tolist())
-        
-        if selected_batch:
-            selected_row = df[df["Batch Name"] == selected_batch].iloc[0]
-            worksheet = selected_row["Worksheet"]
-            
-            try:
-                student_data = worksheet.get_all_records()
-                if student_data:
-                    st.write(f"**Students in {selected_batch}:**")
-                    students_df = pd.DataFrame(student_data)
-                    # Remove batch info row if present
-                    students_df = students_df[students_df["Student ID"].astype(str) != ""]
-                    st.dataframe(students_df, use_container_width=True, height=300)
-                else:
-                    st.info("No students in this batch yet.")
-            except:
-                st.warning("Could not load student data for this batch.")
-        
     except Exception as e:
-        st.error(f"Failed to load batches: {str(e)}")
+        st.error(f"❌ Failed to load batches: {str(e)}")
+
+# ============================
+# PAGE: DEBUG
+# ============================
+def show_debug_page():
+    """Debug page for troubleshooting"""
+    st.title("🐛 Debug Information")
+    show_navigation()
+    
+    st.subheader("Connection Status")
+    st.write(f"Status: {st.session_state.connection_status}")
+    st.write(f"Last Update: {st.session_state.last_update}")
+    
+    if gc:
+        st.success("✅ Google Sheets client is initialized")
+        
+        # Test connection with actual API call
+        if st.button("🔌 Test Connection"):
+            with st.spinner("Testing connection..."):
+                try:
+                    # Try to list files
+                    files = gc.list_spreadsheet_files()
+                    st.success(f"✅ Connection successful! Found {len(files)} spreadsheets")
+                    
+                    # Try to open your specific sheets
+                    st.subheader("Sheet Access Test")
+                    
+                    for sheet_name, sheet_link in [("IELTS", IELTS_SHEET_LINK), ("Aptis", APTIS_SHEET_LINK)]:
+                        try:
+                            sheet = gc.open_by_url(sheet_link)
+                            worksheets = sheet.worksheets()
+                            st.success(f"✅ {sheet_name} Sheet: Access OK ({len(worksheets)} worksheets)")
+                        except Exception as e:
+                            st.error(f"❌ {sheet_name} Sheet: {str(e)}")
+                            
+                except Exception as e:
+                    st.error(f"❌ Connection test failed: {str(e)}")
+    
+    # Credentials info (masked)
+    st.subheader("Credentials Info")
+    if 'gcp_service_account' in st.secrets:
+        creds = st.secrets['gcp_service_account']
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Client Email:**")
+            st.code(creds.get('client_email', 'Not found'))
+        with col2:
+            st.write("**Project ID:**")
+            st.code(creds.get('project_id', 'Not found'))
+        
+        st.write("**Private Key Preview:**")
+        private_key = creds.get('private_key', '')
+        if private_key:
+            # Show first and last 100 chars
+            preview = private_key[:100] + "..." + private_key[-100:] if len(private_key) > 200 else private_key
+            st.code(preview)
+            
+            # Check for newline issues
+            if "\\n" in private_key and "\n" not in private_key:
+                st.warning("⚠️ Private key contains literal '\\n' strings instead of actual newlines")
+            else:
+                st.success("✅ Private key format looks good")
+    else:
+        st.error("❌ No credentials found in secrets")
 
 # ============================
 # MAIN APP ROUTER
@@ -907,6 +1176,8 @@ def main():
         show_find_student_page()
     elif st.session_state.page == 'View Batches':
         show_view_batches_page()
+    elif st.session_state.page == 'Debug':
+        show_debug_page()
     else:
         show_home_page()
     
@@ -914,9 +1185,9 @@ def main():
     st.markdown("---")
     st.markdown(
         """
-        <div style='text-align: center; color: gray;'>
-        🎓 Student Management System • Built with Streamlit • 
-        <a href='https://docs.streamlit.io' target='_blank'>Documentation</a>
+        <div style='text-align: center; color: gray; padding: 20px;'>
+        🎓 Student Management System v2.0 • Built with Streamlit • 
+        <a href='https://docs.streamlit.io' target='_blank' style='color: gray;'>Documentation</a>
         </div>
         """,
         unsafe_allow_html=True
