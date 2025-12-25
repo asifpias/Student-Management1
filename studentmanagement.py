@@ -17,20 +17,22 @@ def get_gspread_client():
     
     try:
         if "gcp_service_account" in st.secrets:
+            # Load the secret as a dictionary
             creds_info = dict(st.secrets["gcp_service_account"])
             
-            # Critical Fix for Private Key formatting
+            # This handles both the \n format and the Triple Quote format
             if "private_key" in creds_info:
+                # Replace literal backslash-n with actual newlines if they exist
                 creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
             
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-            client = gspread.authorize(creds)
-            return client
+            return gspread.authorize(creds)
         else:
-            st.error("❌ 'gcp_service_account' not found in Secrets.")
+            st.error("Missing 'gcp_service_account' in Streamlit Secrets.")
             return None
     except Exception as e:
-        st.error(f"⚠️ Authentication Failed: {e}")
+        # This will show you if the key format is still wrong
+        st.error(f"Authentication Setup Failed: {e}")
         return None
 
 # Initialize the Google Client
