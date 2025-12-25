@@ -4,6 +4,12 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import os
 
+
+# --- 1. SETTINGS & LINKS (Must be at the very top) ---
+IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
+APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
+
+# --- 2. AUTHENTICATION LOGIC ---
 # Add this at the top of your authentication function
 import json
 from io import StringIO
@@ -23,11 +29,6 @@ def get_gspread_client():
                 return client
             except Exception as e:
                 st.error(f"Upload failed: {e}")
-# --- 1. SETTINGS & LINKS (Must be at the very top) ---
-IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
-APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
-
-# --- 2. AUTHENTICATION LOGIC ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", 
              'https://www.googleapis.com/auth/spreadsheets',
