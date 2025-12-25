@@ -3,7 +3,8 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import os
-
+import json
+from io import StringIO
 
 # --- 1. SETTINGS & LINKS (Must be at the very top) ---
 IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
@@ -11,8 +12,7 @@ APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJR
 
 # --- 2. AUTHENTICATION LOGIC ---
 # Add this at the top of your authentication function
-import json
-from io import StringIO
+
 
 def get_gspread_client():
     # ... existing code ...
