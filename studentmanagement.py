@@ -1,14 +1,9 @@
 import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import pandas as pd
 import os
 
-# --- GOOGLE SHEETS LINKS ---
-IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?gid=0#gid=0"
-APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?gid=0#gid=0"
-
-# --- AUTHENTICATION FIX ---
+# --- AUTHENTICATION WITH DEBUGGING ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", 
              'https://www.googleapis.com/auth/spreadsheets',
@@ -16,25 +11,51 @@ def get_gspread_client():
              "https://www.googleapis.com/auth/drive"]
     
     try:
-        if "gcp_service_account" in st.secrets:
-            # Convert Secret to a standard dictionary
-            creds_info = dict(st.secrets["gcp_service_account"])
-            
-            # CRITICAL FIX: The RefreshError usually happens because \n is escaped.
-            # This line ensures the private key is formatted exactly as Google expects.
-            if "private_key" in creds_info:
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-            
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-            return gspread.authorize(creds)
-        else:
-            st.error("Missing 'gcp_service_account' in Streamlit Secrets.")
+        # 1. Check if Secrets exist
+        if "gcp_service_account" not in st.secrets:
+            st.error("❌ ERROR: 'gcp_service_account' not found in Streamlit Secrets!")
             return None
+        
+        # 2. Extract and Clean
+        creds_info = dict(st.secrets["gcp_service_account"])
+        
+        # Handle Private Key Formatting
+        if "private_key" in creds_info:
+            # We fix both escaped newlines and literal newlines
+            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        else:
+            st.error("❌ ERROR: 'private_key' is missing from your Secrets!")
+            return None
+
+        # 3. Attempt to Authorize
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+        authorized_client = gspread.authorize(creds)
+        
+        # 4. Test the client immediately
+        authorized_client.list_spreadsheet_files() 
+        return authorized_client
+
     except Exception as e:
-        st.error(f"Authentication Setup Failed: {e}")
+        st.error(f"⚠️ AUTHENTICATION FAILED: {str(e)}")
+        # This will print the full technical error to your Streamlit app
         return None
 
+# Initialize the client
 client = get_gspread_client()
+
+# --- DATABASE HELPERS ---
+def get_spreadsheet(batch_type):
+    # If client is None, the app shouldn't try to open a sheet
+    if client is None:
+        st.warning("⚠️ Database connection not established. Please check Secrets.")
+        return None
+    
+    link = IELTS_SHEET_LINK if batch_type == "IELTS" else APTIS_SHEET_LINK
+    try:
+        return client.open_by_url(link)
+    except Exception as e:
+        st.error(f"❌ Could not open {batch_type} sheet: {e}")
+        return None
 
 # --- DATABASE HELPERS ---
 def get_spreadsheet(batch_type):
