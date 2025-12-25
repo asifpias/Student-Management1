@@ -4,6 +4,25 @@ from oauth2client.service_account import ServiceAccountCredentials
 import pandas as pd
 import os
 
+# Add this at the top of your authentication function
+import json
+from io import StringIO
+
+def get_gspread_client():
+    # ... existing code ...
+    
+    # Add this temporary upload option
+    with st.sidebar.expander("⚠️ Troubleshooting: Upload JSON Key"):
+        uploaded_file = st.file_uploader("Or upload service account JSON", type=['json'])
+        if uploaded_file:
+            try:
+                creds_dict = json.loads(uploaded_file.getvalue().decode('utf-8'))
+                credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+                client = gspread.authorize(credentials)
+                st.success("✅ Loaded from uploaded file!")
+                return client
+            except Exception as e:
+                st.error(f"Upload failed: {e}")
 # --- 1. SETTINGS & LINKS (Must be at the very top) ---
 IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
 APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
