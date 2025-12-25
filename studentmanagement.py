@@ -1,9 +1,14 @@
 import streamlit as st
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import pandas as pd
 import os
 
-# --- AUTHENTICATION WITH DEBUGGING ---
+# --- 1. SETTINGS & LINKS (Must be at the very top) ---
+IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
+APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
+
+# --- 2. AUTHENTICATION LOGIC ---
 def get_gspread_client():
     scope = ["https://spreadsheets.google.com/feeds", 
              'https://www.googleapis.com/auth/spreadsheets',
@@ -11,60 +16,38 @@ def get_gspread_client():
              "https://www.googleapis.com/auth/drive"]
     
     try:
-        # 1. Check if Secrets exist
-        if "gcp_service_account" not in st.secrets:
-            st.error("❌ ERROR: 'gcp_service_account' not found in Streamlit Secrets!")
-            return None
-        
-        # 2. Extract and Clean
-        creds_info = dict(st.secrets["gcp_service_account"])
-        
-        # Handle Private Key Formatting
-        if "private_key" in creds_info:
-            # We fix both escaped newlines and literal newlines
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+        if "gcp_service_account" in st.secrets:
+            creds_info = dict(st.secrets["gcp_service_account"])
+            
+            # Critical Fix for Private Key formatting
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+            client = gspread.authorize(creds)
+            return client
         else:
-            st.error("❌ ERROR: 'private_key' is missing from your Secrets!")
+            st.error("❌ 'gcp_service_account' not found in Secrets.")
             return None
-
-        # 3. Attempt to Authorize
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-        authorized_client = gspread.authorize(creds)
-        
-        # 4. Test the client immediately
-        authorized_client.list_spreadsheet_files() 
-        return authorized_client
-
     except Exception as e:
-        st.error(f"⚠️ AUTHENTICATION FAILED: {str(e)}")
-        # This will print the full technical error to your Streamlit app
+        st.error(f"⚠️ Authentication Failed: {e}")
         return None
 
-# Initialize the client
-client = get_gspread_client()
+# Initialize the Google Client
+gc = get_gspread_client()
 
-# --- DATABASE HELPERS ---
+# --- 3. DATABASE HELPERS ---
 def get_spreadsheet(batch_type):
-    # If client is None, the app shouldn't try to open a sheet
-    if client is None:
-        st.warning("⚠️ Database connection not established. Please check Secrets.")
+    if gc is None:
         return None
     
+    # Use the links defined at the top
     link = IELTS_SHEET_LINK if batch_type == "IELTS" else APTIS_SHEET_LINK
+    
     try:
-        return client.open_by_url(link)
+        return gc.open_by_url(link)
     except Exception as e:
-        st.error(f"❌ Could not open {batch_type} sheet: {e}")
-        return None
-
-# --- DATABASE HELPERS ---
-def get_spreadsheet(batch_type):
-    if not client: return None
-    link = IELTS_SHEET_LINK if batch_type == "IELTS" else APTIS_SHEET_LINK
-    try:
-        return client.open_by_url(link)
-    except Exception as e:
-        st.error(f"Could not open {batch_type} spreadsheet. Ensure it is shared with your service account email.")
+        st.error(f"❌ Error opening {batch_type} sheet: {e}")
         return None
 
 def get_all_batch_names():
@@ -75,7 +58,7 @@ def get_all_batch_names():
             batches.extend([ws.title for ws in ss.worksheets()])
     return batches
 
-# --- NAVIGATION LOGIC ---
+# --- 4. NAVIGATION ---
 if 'page' not in st.session_state:
     st.session_state.page = 'Home'
 
@@ -83,7 +66,6 @@ def nav(target):
     st.session_state.page = target
     st.rerun()
 
-# --- REUSABLE NAVIGATION COMPONENT ---
 def show_top_nav():
     c1, c2 = st.columns([1, 8])
     with c1:
@@ -92,11 +74,14 @@ def show_top_nav():
         if st.button("⬅️ Back"): nav('Home')
     st.markdown("---")
 
-# --- PAGES ---
+# --- 5. INTERFACES ---
 
 if st.session_state.page == 'Home':
     st.title("🎓 Student Management App")
-    st.subheader("Welcome! Choose an action below:")
+    st.subheader("Main Menu")
+    
+    if gc is None:
+        st.error("Database connection is offline. Please check your Streamlit Secrets.")
     
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -116,16 +101,15 @@ elif st.session_state.page == 'Create Batch':
         year = st.selectbox("Year", range(2025, 2031))
         time = st.selectbox("Time", ["4pm", "6pm"])
         
-        c1, c2 = st.columns(2)
-        with c1:
-            if st.form_submit_button("Create Now"):
+        if st.form_submit_button("Create Now"):
+            if b_name:
                 ss = get_spreadsheet(b_type)
                 if ss:
                     new_ws = ss.add_worksheet(title=b_name, rows="100", cols="10")
                     new_ws.append_row(["Student Name", "Student ID", "Contact", "Email", "Batch", "Time"])
-                    st.success(f"✅ Success! Batch '{b_name}' created in {b_type} Sheets.")
-        with c2:
-            if st.form_submit_button("Reset"): st.rerun()
+                    st.success(f"✅ Success! Batch '{b_name}' created.")
+            else:
+                st.warning("Please enter a batch name.")
 
 elif st.session_state.page == 'Add Student':
     st.title("➕ Add Student Information")
@@ -133,7 +117,7 @@ elif st.session_state.page == 'Add Student':
     all_batches = get_all_batch_names()
     
     if not all_batches:
-        st.warning("No batches found. Please create a batch first.")
+        st.info("No batches found. Create a batch first.")
     else:
         with st.form("std_form", clear_on_submit=True):
             name = st.text_input("Name of Student")
@@ -144,37 +128,38 @@ elif st.session_state.page == 'Add Student':
             tm = st.selectbox("Time", ["4pm", "6pm"])
             
             if st.form_submit_button("Submit Information"):
-                found = False
+                success = False
                 for t in ["IELTS", "Aptis"]:
                     ss = get_spreadsheet(t)
                     try:
                         ws = ss.worksheet(bat)
                         ws.append_row([name, sid, cont, mail, bat, tm])
-                        st.success(f"✅ Success! {name} has been added to {bat}.")
-                        found = True; break
+                        st.success(f"✅ Added {name} to {bat}!")
+                        success = True
+                        break
                     except: continue
-                if not found: st.error("Batch worksheet not found.")
+                if not success: st.error("Could not find the selected batch.")
 
 elif st.session_state.page == 'Find Student':
     st.title("🔍 Find Student")
     show_top_nav()
     
-    search = st.text_input("Search by Name or Student ID")
-    b_filter = st.selectbox("Filter by Batch", ["All"] + get_all_batch_names())
+    search_q = st.text_input("Search Name or ID")
+    batch_filter = st.selectbox("Filter by Batch", ["All"] + get_all_batch_names())
     
-    all_recs = []
+    all_data = []
     for t in ["IELTS", "Aptis"]:
         ss = get_spreadsheet(t)
         if ss:
             for ws in ss.worksheets():
-                if b_filter == "All" or ws.title == b_filter:
-                    df_temp = pd.DataFrame(ws.get_all_records())
-                    if not df_temp.empty: all_recs.append(df_temp)
+                if batch_filter == "All" or ws.title == batch_filter:
+                    df = pd.DataFrame(ws.get_all_records())
+                    if not df.empty: all_data.append(df)
     
-    if all_recs:
-        main_df = pd.concat(all_recs, ignore_index=True)
-        if search:
-            main_df = main_df[main_df.astype(str).apply(lambda x: x.str.contains(search, case=False)).any(axis=1)]
-        st.dataframe(main_df, use_container_width=True)
+    if all_data:
+        final_df = pd.concat(all_data, ignore_index=True)
+        if search_q:
+            final_df = final_df[final_df.astype(str).apply(lambda x: x.str.contains(search_q, case=False)).any(axis=1)]
+        st.dataframe(final_df, use_container_width=True)
     else:
-        st.info("No records to display.")
+        st.info("No records found.")
