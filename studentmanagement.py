@@ -18,7 +18,7 @@ def get_gspread_client():
         if "gcp_service_account" in st.secrets:
             creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
         else:
-            creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+            creds = ServiceAccountCredentials.from_json_keyfile_name("dc8c1fade39e4047c349adb0fabbe89e8ba5a2d2", scope)
         return gspread.authorize(creds)
     except Exception as e:
         st.error(f"Authentication Error: {e}")
