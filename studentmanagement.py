@@ -33,7 +33,29 @@ def get_gspread_client():
         return None
 
 client = get_gspread_client()
-
+def get_gspread_client():
+    scope = ["https://spreadsheets.google.com/feeds", 
+             'https://www.googleapis.com/auth/spreadsheets',
+             "https://www.googleapis.com/auth/drive.file", 
+             "https://www.googleapis.com/auth/drive"]
+    
+    try:
+        if "gcp_service_account" in st.secrets:
+            # Create a copy so we don't mutate the original secret
+            creds_info = dict(st.secrets["gcp_service_account"])
+            
+            # CRITICAL FIX: Ensure newlines in the private key are handled correctly
+            if "private_key" in creds_info:
+                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
+            return gspread.authorize(creds)
+        else:
+            st.error("Secret key 'gcp_service_account' not found.")
+            return None
+    except Exception as e:
+        st.error(f"Failed to authenticate: {e}")
+        return None
 # --- DATABASE HELPERS ---
 
 def get_spreadsheet(batch_type):
