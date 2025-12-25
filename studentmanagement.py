@@ -1,59 +1,144 @@
 import streamlit as st
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 import pandas as pd
-import os
-import json
-from io import StringIO
+from datetime import datetime
 
 # --- 1. SETTINGS & LINKS (Must be at the very top) ---
 IELTS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1rxO0DSqjaevC5rvuCpwU0Z94jTZZ_PVt72Vnu44H5js/edit?usp=sharing"
 APTIS_SHEET_LINK = "https://docs.google.com/spreadsheets/d/1aNcZnUa5JhKE-IQ_xyJRzx7F9P5C2WbnDwO0lVQPWPU/edit?usp=sharing"
 
-# --- 2. AUTHENTICATION LOGIC ---
-# Add this at the top of your authentication function
-
-
+# --- 2. UPDATED AUTHENTICATION LOGIC ---
 def get_gspread_client():
-    # ... existing code ...
-    
-    # Add this temporary upload option
-    with st.sidebar.expander("⚠️ Troubleshooting: Upload JSON Key"):
-        uploaded_file = st.file_uploader("Or upload service account JSON", type=['json'])
-        if uploaded_file:
+    """Initialize Google Sheets connection with google-auth"""
+    try:
+        # Define the scopes
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        
+        # Check if secrets exist
+        if "gcp_service_account" in st.secrets:
+            # Load credentials from Streamlit secrets
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            
+            # IMPORTANT: Ensure the private key is properly formatted
+            # Some platforms might have already converted \n to actual newlines
+            # If it's stored as a string with literal \n, we need to fix it
+            if "private_key" in creds_dict:
+                private_key = creds_dict["private_key"]
+                # Try to detect and fix common formatting issues
+                if "-----BEGIN PRIVATE KEY-----\\n" in private_key:
+                    # Replace literal \n with actual newlines
+                    private_key = private_key.replace("\\n", "\n")
+                creds_dict["private_key"] = private_key
+            
+            # Create credentials using google-auth
+            credentials = Credentials.from_service_account_info(
+                creds_dict,
+                scopes=scopes
+            )
+            
+            # Authorize gspread client
+            client = gspread.authorize(credentials)
+            
+            # Test the connection
             try:
-                creds_dict = json.loads(uploaded_file.getvalue().decode('utf-8'))
-                credentials = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-                client = gspread.authorize(credentials)
-                st.success("✅ Loaded from uploaded file!")
-                return client
-            except Exception as e:
-                st.error(f"Upload failed: {e}")
-def get_gspread_client():
-    scope = ["https://spreadsheets.google.com/feeds", 
-             'https://www.googleapis.com/auth/spreadsheets',
-             "https://www.googleapis.com/auth/drive.file", 
-             "https://www.googleapis.com/auth/drive"]
+                # Try to open a test sheet to verify credentials work
+                client.list_spreadsheet_files(max_results=1)
+                st.sidebar.success("✅ Connected to Google Sheets")
+            except Exception as test_error:
+                st.sidebar.error(f"Connection test failed: {test_error}")
+                return None
+                
+            return client
+        else:
+            st.error("""
+            ❌ Missing Google Cloud Service Account credentials.
+            
+            Please add your service account credentials to Streamlit Secrets:
+            
+            1. Go to Google Cloud Console
+            2. Create a Service Account with Sheets & Drive API access
+            3. Download the JSON key file
+            4. Add it to your Streamlit secrets under `gcp_service_account`
+            """)
+            return None
+            
+    except Exception as e:
+        st.error(f"🔥 Authentication failed: {str(e)}")
+        st.info("""
+        **Common fixes:**
+        1. Ensure you've shared your Google Sheets with the service account email
+        2. Check that the private key is correctly formatted with actual newlines
+        3. Verify all required fields are in your secrets: 
+           - type
+           - project_id
+           - private_key_id
+           - private_key
+           - client_email
+           - client_id
+           - auth_uri
+           - token_uri
+           - auth_provider_x509_cert_url
+           - client_x509_cert_url
+        """)
+        return None
+
+# Initialize the Google Client
+gc = get_gspread_client()
+
+# --- 3. DATABASE HELPERS (Updated with better error handling) ---
+def get_spreadsheet(batch_type):
+    """Get spreadsheet by type with error handling"""
+    if gc is None:
+        st.error("Not connected to Google Sheets. Please check authentication.")
+        return None
     
     try:
-        if "gcp_service_account" in st.secrets:
-            # Load the secret as a dictionary
-            creds_info = dict(st.secrets["gcp_service_account"])
+        link = IELTS_SHEET_LINK if batch_type == "IELTS" else APTIS_SHEET_LINK
+        spreadsheet = gc.open_by_url(link)
+        
+        # Test access by getting sheet names
+        spreadsheet.worksheets()
+        
+        return spreadsheet
+    except gspread.exceptions.APIError as e:
+        error_msg = str(e)
+        if "PERMISSION_DENIED" in error_msg or "notFound" in error_msg:
+            st.error(f"""
+            ❌ Permission denied for {batch_type} sheet.
             
-            # This handles both the \n format and the Triple Quote format
-            if "private_key" in creds_info:
-                # Replace literal backslash-n with actual newlines if they exist
-                creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
-            
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_info, scope)
-            return gspread.authorize(creds)
+            **To fix this:**
+            1. Open your Google Sheet: {link}
+            2. Click "Share" button
+            3. Add your service account email as an editor
+            4. Service account email: {st.secrets["gcp_service_account"]["client_email"]}
+            """)
         else:
-            st.error("Missing 'gcp_service_account' in Streamlit Secrets.")
-            return None
-    except Exception as e:
-        # This will show you if the key format is still wrong
-        st.error(f"Authentication Setup Failed: {e}")
+            st.error(f"❌ Google Sheets API Error: {error_msg}")
         return None
+    except Exception as e:
+        st.error(f"❌ Error opening {batch_type} sheet: {type(e).__name__}: {str(e)}")
+        return None
+
+def get_all_batch_names():
+    """Get all batch names from both spreadsheets"""
+    batches = []
+    for batch_type in ["IELTS", "Aptis"]:
+        ss = get_spreadsheet(batch_type)
+        if ss:
+            try:
+                worksheets = ss.worksheets()
+                batch_names = [ws.title for ws in worksheets]
+                batches.extend(batch_names)
+            except Exception as e:
+                st.warning(f"Could not read worksheets from {batch_type} sheet: {e}")
+    return sorted(set(batches))  # Remove duplicates and sort
+
+# --- REST OF YOUR CODE REMAINS THE SAME ---
+# (Keep your navigation and interface code as is)
 
 # Initialize the Google Client
 gc = get_gspread_client()
